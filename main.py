@@ -4,13 +4,11 @@ from flask import Flask
 from threading import Thread
 import utils
 
-# Render ရဲ့ Environment Variable ကနေ Token ကို ယူပါမယ်
 TOKEN = os.environ.get('BOT_TOKEN', 'သင့်_Bot_Token_ကို_ဒီနေရာမှာ_ထည့်ပါ')
 bot = telebot.TeleBot(TOKEN)
 
 app = Flask(__name__)
 
-# User တစ်ယောက်ချင်းစီအတွက် Email အများကြီး သိမ်းထားဖို့
 user_data = {}
 MAX_EMAILS = 5
 
@@ -22,7 +20,6 @@ def run_flask():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
-# ================== Bot Commands ==================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(message, "Welcome! Use /mail for menu.")
@@ -40,7 +37,6 @@ def mail_menu(message):
     markup.add(btn5)
     bot.send_message(message.chat.id, "Welcome to mail menu.", reply_markup=markup)
 
-# ================== Button Handlers ==================
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     chat_id = call.message.chat.id
@@ -59,7 +55,8 @@ def callback_query(call):
         if success:
             email, password, token = result
             user_data[chat_id].append({"email": email, "password": password, "token": token})
-            bot.send_message(chat_id, f"✅ သင့် Email အသစ်:\n`{email}`\n\nInbox စစ်ရန် /mail ကို ပြန်နှိပ်ပါ။", parse_mode="Markdown")
+            # Parse_mode ကို ဖြုတ်ထားပါတယ် (Error မတက်အောင်)
+            bot.send_message(chat_id, f"✅ သင့် Email အသစ်:\n{email}\n\nInbox စစ်ရန် /mail ကို ပြန်နှိပ်ပါ။")
         else:
             bot.send_message(chat_id, f"❌ Error: {result}")
 
@@ -69,8 +66,8 @@ def callback_query(call):
         else:
             msg = "📧 သင့် Email များ:\n\n"
             for i, item in enumerate(user_data[chat_id]):
-                msg += f"{i+1}. `{item['email']}`\n"
-            bot.send_message(chat_id, msg, parse_mode="Markdown")
+                msg += f"{i+1}. {item['email']}\n"
+            bot.send_message(chat_id, msg)
 
     elif call.data == "inbox":
         emails = user_data[chat_id]
@@ -135,7 +132,6 @@ def fetch_inbox(chat_id, token):
     else:
         bot.send_message(chat_id, f"❌ Error: {messages}")
 
-# ================== Main ==================
 if __name__ == "__main__":
     t = Thread(target=run_flask)
     t.start()
