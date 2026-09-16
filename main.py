@@ -1,4 +1,5 @@
 import os
+import json
 import telebot
 from flask import Flask
 from threading import Thread
@@ -9,8 +10,25 @@ bot = telebot.TeleBot(TOKEN)
 
 app = Flask(__name__)
 
-user_data = {}
+DATA_FILE = "user_data.json"
 MAX_EMAILS = 5
+
+# ================== File Saving System ==================
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_data():
+    with open(DATA_FILE, 'w') as f:
+        json.dump(user_data, f)
+
+# Bot စတင်တဲ့အခါ ဖိုင်ထဲက Email တွေကို ပြန်ဖတ်ပါမယ်
+user_data = load_data()
 
 @app.route('/')
 def home():
@@ -20,6 +38,7 @@ def run_flask():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
+# ================== Bot Commands ==================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(message, "Welcome! Use /mail for menu.")
@@ -37,14 +56,15 @@ def mail_menu(message):
     markup.add(btn5)
     bot.send_message(message.chat.id, "Welcome to mail menu.", reply_markup=markup)
 
+# ================== Button Handlers ==================
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
-    chat_id = call.message.chat.id
+    chat_id = str(call.message.chat.id) # JSON အတွက် string ပြောင်းထားပါတယ်
     if chat_id not in user_data:
         user_data[chat_id] = []
 
     if call.data == "close":
-        bot.delete_message(chat_id, call.message.message_id)
+        bot.delete_message(call.message.chat.id, call.message.message_id)
 
     elif call.data == "new_email":
         if len(user_data[chat_id]) >= MAX_EMAILS:
@@ -55,58 +75,59 @@ def callback_query(call):
         if success:
             email, password, token = result
             user_data[chat_id].append({"email": email, "password": password, "token": token})
-            # Parse_mode ကို ဖြုတ်ထားပါတယ် (Error မတက်အောင်)
-            bot.send_message(chat_id, f"✅ သင့် Email အသစ်:\n{email}\n\nInbox စစ်ရန် /mail ကို ပြန်နှိပ်ပါ။")
+            save_data() # 💾 ဖိုင်ထဲ သိမ်းလိုက်ပါပြီ
+            bot.send_message(call.message.chat.id, f"✅ သင့် Email အသစ်:\n{email}\n\nInbox စစ်ရန် /mail ကို ပြန်နှိပ်ပါ။")
         else:
-            bot.send_message(chat_id, f"❌ Error: {result}")
+            bot.send_message(call.message.chat.id, f"❌ Error: {result}")
 
     elif call.data == "email_list":
         if not user_data[chat_id]:
-            bot.send_message(chat_id, "❌ Email မရှိသေးပါ။ New Email ကို အရင်နှိပ်ပါ။")
+            bot.send_message(call.message.chat.id, "❌ Email မရှိသေးပါ။ New Email ကို အရင်နှိပ်ပါ။")
         else:
             msg = "📧 သင့် Email များ:\n\n"
             for i, item in enumerate(user_data[chat_id]):
                 msg += f"{i+1}. {item['email']}\n"
-            bot.send_message(chat_id, msg)
+            bot.send_message(call.message.chat.id, msg)
 
     elif call.data == "inbox":
         emails = user_data[chat_id]
         if not emails:
-            bot.send_message(chat_id, "❌ Email မရှိသေးပါ။ New Email ကို အရင်နှိပ်ပါ။")
+            bot.send_message(call.message.chat.id, "❌ Email မရှိသေးပါ။ New Email ကို အရင်နှိပ်ပါ။")
         elif len(emails) == 1:
             bot.answer_callback_query(call.id, "Inbox စစ်ဆေးနေပါတယ်...")
-            fetch_inbox(chat_id, emails[0]['token'])
+            fetch_inbox(call.message.chat.id, emails[0]['token'])
         else:
             markup = telebot.types.InlineKeyboardMarkup()
             for i, item in enumerate(emails):
                 markup.add(telebot.types.InlineKeyboardButton(f"📧 {item['email']}", callback_data=f"inbox_{i}"))
-            bot.send_message(chat_id, "စစ်ဆေးလိုသော Email ကို ရွေးပါ:", reply_markup=markup)
+            bot.send_message(call.message.chat.id, "စစ်ဆေးလိုသော Email ကို ရွေးပါ:", reply_markup=markup)
 
     elif call.data.startswith("inbox_"):
         idx = int(call.data.split("_")[1])
         emails = user_data[chat_id]
         if 0 <= idx < len(emails):
             bot.answer_callback_query(call.id, "Inbox စစ်ဆေးနေပါတယ်...")
-            fetch_inbox(chat_id, emails[idx]['token'])
+            fetch_inbox(call.message.chat.id, emails[idx]['token'])
         else:
             bot.answer_callback_query(call.id, "Email မတွေ့ပါ။")
 
     elif call.data == "delete_email":
         emails = user_data[chat_id]
         if not emails:
-            bot.send_message(chat_id, "❌ ဖျက်ရန် Email မရှိပါ။")
+            bot.send_message(call.message.chat.id, "❌ ဖျက်ရန် Email မရှိပါ။")
         elif len(emails) == 1:
             success, _ = utils.Delete_Account(emails[0]['token'])
             if success:
                 user_data[chat_id].pop(0)
-                bot.send_message(chat_id, "🗑 Email ကို ဖျက်လိုက်ပါပြီ။")
+                save_data() # 💾 ဖိုင်ထဲ သိမ်းလိုက်ပါပြီ
+                bot.send_message(call.message.chat.id, "🗑 Email ကို ဖျက်လိုက်ပါပြီ။")
             else:
-                bot.send_message(chat_id, "❌ ဖျက်လို့မရပါ။")
+                bot.send_message(call.message.chat.id, "❌ ဖျက်လို့မရပါ။")
         else:
             markup = telebot.types.InlineKeyboardMarkup()
             for i, item in enumerate(emails):
                 markup.add(telebot.types.InlineKeyboardButton(f"🗑 {item['email']}", callback_data=f"delete_{i}"))
-            bot.send_message(chat_id, "ဖျက်လိုသော Email ကို ရွေးပါ:", reply_markup=markup)
+            bot.send_message(call.message.chat.id, "ဖျက်လိုသော Email ကို ရွေးပါ:", reply_markup=markup)
 
     elif call.data.startswith("delete_"):
         idx = int(call.data.split("_")[1])
@@ -115,9 +136,10 @@ def callback_query(call):
             success, _ = utils.Delete_Account(emails[idx]['token'])
             if success:
                 user_data[chat_id].pop(idx)
-                bot.send_message(chat_id, "🗑 Email ကို ဖျက်လိုက်ပါပြီ။")
+                save_data() # 💾 ဖိုင်ထဲ သိမ်းလိုက်ပါပြီ
+                bot.send_message(call.message.chat.id, "🗑 Email ကို ဖျက်လိုက်ပါပြီ။")
             else:
-                bot.send_message(chat_id, "❌ ဖျက်လို့မရပါ။")
+                bot.send_message(call.message.chat.id, "❌ ဖျက်လို့မရပါ။")
         else:
             bot.answer_callback_query(call.id, "Email မတွေ့ပါ။")
 
