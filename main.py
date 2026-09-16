@@ -3,6 +3,8 @@ import json
 import telebot
 from flask import Flask
 from threading import Thread
+from datetime import datetime, timezone, timedelta
+import time
 import utils
 
 TOKEN = os.environ.get('BOT_TOKEN', 'သင့်_Bot_Token_ကို_ဒီနေရာမှာ_ထည့်ပါ')
@@ -12,27 +14,102 @@ app = Flask(__name__)
 
 DATA_FILE = "user_data.json"
 MAX_EMAILS = 10
+EMAIL_LIFETIME = timedelta(days=7)
+CLEANUP_INTERVAL = 60 * 60  # Check every hour
 
 # ================== File Saving System ==================
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
-            with open(DATA_FILE, 'r') as f:
-                return json.load(f)
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
         except Exception:
             return {}
     return {}
 
-def save_data():
-    with open(DATA_FILE, 'w') as f:
-        json.dump(user_data, f)
 
-# Bot စတင်တဲ့အခါ ဖိုင်ထဲက Email တွေကို ပြန်ဖတ်ပါမယ်
+def save_data():
+    try:
+        temp_file = f"{DATA_FILE}.tmp"
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(user_data, f, ensure_ascii=False, indent=2)
+        os.replace(temp_file, DATA_FILE)
+    except Exception as error:
+        print(f"Could not save user data: {error}")
+
+
 user_data = load_data()
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def parse_created_at(value):
+    try:
+        created_at = datetime.fromisoformat(value)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return created_at.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def cleanup_expired_emails():
+    """Delete emails older than seven days from Mail.tm and local storage."""
+    now = utc_now()
+    changed = False
+
+    for chat_id, emails in list(user_data.items()):
+        active_emails = []
+
+        for item in emails:
+            created_at = parse_created_at(item.get('created_at'))
+
+            # Give legacy entries (created before expiry tracking) seven days
+            # starting from the first cleanup after this update.
+            if created_at is None:
+                item['created_at'] = now.isoformat()
+                created_at = now
+                changed = True
+
+            if now - created_at >= EMAIL_LIFETIME:
+                try:
+                    utils.Delete_Account(item.get('token', ''))
+                except Exception as error:
+                    print(f"Could not delete expired account: {error}")
+                changed = True
+                continue
+
+            active_emails.append(item)
+
+        if active_emails:
+            user_data[chat_id] = active_emails
+        elif emails:
+            user_data.pop(chat_id, None)
+            changed = True
+
+    if changed:
+        save_data()
+
+
+def cleanup_loop():
+    while True:
+        try:
+            cleanup_expired_emails()
+        except Exception as error:
+            print(f"Cleanup error: {error}")
+        time.sleep(CLEANUP_INTERVAL)
+
+
+# Clean up once before the bot starts, then continue hourly in the background.
+cleanup_expired_emails()
 
 @app.route('/')
 def home():
     return "Bot is running!"
+
 
 def run_flask():
     port = int(os.environ.get('PORT', 8080))
@@ -43,8 +120,10 @@ def run_flask():
 def send_welcome(message):
     bot.reply_to(message, "Welcome! Use /mail for menu.")
 
+
 @bot.message_handler(commands=['mail'])
 def mail_menu(message):
+    cleanup_expired_emails()
     markup = telebot.types.InlineKeyboardMarkup()
     btn1 = telebot.types.InlineKeyboardButton("📧 New Email", callback_data="new_email")
     btn2 = telebot.types.InlineKeyboardButton("📋 Email List", callback_data="email_list")
@@ -59,7 +138,8 @@ def mail_menu(message):
 # ================== Button Handlers ==================
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
-    chat_id = str(call.message.chat.id) # JSON အတွက် string ပြောင်းထားပါတယ်
+    cleanup_expired_emails()
+    chat_id = str(call.message.chat.id)
     if chat_id not in user_data:
         user_data[chat_id] = []
 
@@ -74,9 +154,14 @@ def callback_query(call):
         success, result = utils.Generate_Email()
         if success:
             email, password, token = result
-            user_data[chat_id].append({"email": email, "password": password, "token": token})
-            save_data() # 💾 ဖိုင်ထဲ သိမ်းလိုက်ပါပြီ
-            bot.send_message(call.message.chat.id, f"✅ သင့် Email အသစ်:\n{email}\n\nInbox စစ်ရန် /mail ကို ပြန်နှိပ်ပါ။")
+            user_data[chat_id].append({
+                "email": email,
+                "password": password,
+                "token": token,
+                "created_at": utc_now().isoformat()
+            })
+            save_data()
+            bot.send_message(call.message.chat.id, f"✅ သင့် Email အသစ်:\n{email}\n\nဒီ Email သည် ၇ ရက်အကြာတွင် အလိုအလျောက် ဖျက်ပါမည်။")
         else:
             bot.send_message(call.message.chat.id, f"❌ Error: {result}")
 
@@ -86,7 +171,7 @@ def callback_query(call):
         else:
             msg = "📧 သင့် Email များ:\n\n"
             for i, item in enumerate(user_data[chat_id]):
-                msg += f"{i+1}. {item['email']}\n"
+                msg += f"{i + 1}. {item['email']}\n"
             bot.send_message(call.message.chat.id, msg)
 
     elif call.data == "inbox":
@@ -103,7 +188,11 @@ def callback_query(call):
             bot.send_message(call.message.chat.id, "စစ်ဆေးလိုသော Email ကို ရွေးပါ:", reply_markup=markup)
 
     elif call.data.startswith("inbox_"):
-        idx = int(call.data.split("_")[1])
+        try:
+            idx = int(call.data.split("_", 1)[1])
+        except ValueError:
+            bot.answer_callback_query(call.id, "Email မတွေ့ပါ။")
+            return
         emails = user_data[chat_id]
         if 0 <= idx < len(emails):
             bot.answer_callback_query(call.id, "Inbox စစ်ဆေးနေပါတယ်...")
@@ -119,7 +208,7 @@ def callback_query(call):
             success, _ = utils.Delete_Account(emails[0]['token'])
             if success:
                 user_data[chat_id].pop(0)
-                save_data() # 💾 ဖိုင်ထဲ သိမ်းလိုက်ပါပြီ
+                save_data()
                 bot.send_message(call.message.chat.id, "🗑 Email ကို ဖျက်လိုက်ပါပြီ။")
             else:
                 bot.send_message(call.message.chat.id, "❌ ဖျက်လို့မရပါ။")
@@ -130,18 +219,23 @@ def callback_query(call):
             bot.send_message(call.message.chat.id, "ဖျက်လိုသော Email ကို ရွေးပါ:", reply_markup=markup)
 
     elif call.data.startswith("delete_"):
-        idx = int(call.data.split("_")[1])
+        try:
+            idx = int(call.data.split("_", 1)[1])
+        except ValueError:
+            bot.answer_callback_query(call.id, "Email မတွေ့ပါ။")
+            return
         emails = user_data[chat_id]
         if 0 <= idx < len(emails):
             success, _ = utils.Delete_Account(emails[idx]['token'])
             if success:
                 user_data[chat_id].pop(idx)
-                save_data() # 💾 ဖိုင်ထဲ သိမ်းလိုက်ပါပြီ
+                save_data()
                 bot.send_message(call.message.chat.id, "🗑 Email ကို ဖျက်လိုက်ပါပြီ။")
             else:
                 bot.send_message(call.message.chat.id, "❌ ဖျက်လို့မရပါ။")
         else:
             bot.answer_callback_query(call.id, "Email မတွေ့ပါ။")
+
 
 def fetch_inbox(chat_id, token):
     success, messages = utils.Load_Mail_Box(token)
@@ -154,8 +248,13 @@ def fetch_inbox(chat_id, token):
     else:
         bot.send_message(chat_id, f"❌ Error: {messages}")
 
+# ================== Main ==================
 if __name__ == "__main__":
-    t = Thread(target=run_flask)
-    t.start()
+    cleanup_thread = Thread(target=cleanup_loop, daemon=True)
+    cleanup_thread.start()
+
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
     print("Bot is starting...")
     bot.infinity_polling()
