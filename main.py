@@ -11,7 +11,7 @@ bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 DATA_FILE = "user_data.json"
-MAX_EMAILS = 5
+MAX_EMAILS = 10
 
 # ================== File Saving System ==================
 def load_data():
