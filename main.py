@@ -3,6 +3,7 @@ import telebot
 from flask import Flask
 from threading import Thread
 import utils
+import json
 
 # Render ရဲ့ Environment Variable ကနေ Token ကို ယူပါမယ်
 TOKEN = os.environ.get('BOT_TOKEN', 'သင့်_Bot_Token_ကို_ဒီနေရာမှာ_ထည့်ပါ')
@@ -10,6 +11,9 @@ bot = telebot.TeleBot(TOKEN)
 
 # Render က Web Service အနေနဲ့ run ဖို့ Flask ကို သုံးပါမယ်
 app = Flask(__name__)
+
+# User တစ်ယောက်ချင်းစီရဲ့ Email အချက်အလက်ကို ခေတ္တမှတ်ထားဖို့ (Render restart ဖြစ်ရင် ပျောက်သွားနိုင်ပါတယ်)
+user_data = {}
 
 @app.route('/')
 def home():
@@ -37,14 +41,54 @@ def mail_menu(message):
     markup.add(btn5)
     bot.send_message(message.chat.id, "Welcome to mail menu.", reply_markup=markup)
 
+# ================== Button Handlers ==================
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
+    chat_id = call.message.chat.id
+    
     if call.data == "close":
-        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.delete_message(chat_id, call.message.message_id)
+        
     elif call.data == "new_email":
         bot.answer_callback_query(call.id, "Email အသစ် ဖန်တီးနေပါတယ်...")
-        # ဒီနေရာမှာ utils.Generate_Email() ကို ခေါ်ပြီး အလုပ်လုပ်နိုင်ပါတယ်
-        bot.send_message(call.message.chat.id, "ဒီ feature ကို နောက်မှ ထည့်ပါမယ်။")
+        success, result = utils.Generate_Email()
+        if success:
+            email, password, token = result
+            user_data[chat_id] = {"email": email, "password": password, "token": token}
+            bot.send_message(chat_id, f"✅ သင့် Email အသစ်:\n`{email}`\n\nInbox စစ်ရန် /mail ကို ပြန်နှိပ်ပါ။", parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, f"❌ Error: {result}")
+            
+    elif call.data == "email_list":
+        if chat_id in user_data:
+            bot.send_message(chat_id, f"📧 သင့် Email: `{user_data[chat_id]['email']}`", parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, "❌ Email မရှိသေးပါ။ New Email ကို အရင်နှိပ်ပါ။")
+            
+    elif call.data == "inbox":
+        if chat_id in user_data:
+            bot.answer_callback_query(call.id, "Inbox စစ်ဆေးနေပါတယ်...")
+            token = user_data[chat_id]['token']
+            success, messages = utils.Load_Mail_Box(token)
+            if success:
+                if not messages:
+                    bot.send_message(chat_id, "📭 Inbox ထဲမှာ Email မရှိသေးပါဘူး။")
+                else:
+                    for msg in messages:
+                        bot.send_message(chat_id, msg)
+            else:
+                bot.send_message(chat_id, f"❌ Error: {messages}")
+        else:
+            bot.send_message(chat_id, "❌ Email မရှိသေးပါ။ New Email ကို အရင်နှိပ်ပါ။")
+            
+    elif call.data == "delete_email":
+        if chat_id in user_data:
+            token = user_data[chat_id]['token']
+            utils.Delete_Account(token)
+            del user_data[chat_id]
+            bot.send_message(chat_id, "🗑 Email ကို ဖျက်လိုက်ပါပြီ။")
+        else:
+            bot.send_message(chat_id, "❌ ဖျက်ရန် Email မရှိပါ။")
 
 # ================== Main ==================
 if __name__ == "__main__":
